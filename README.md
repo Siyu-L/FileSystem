@@ -1,12 +1,11 @@
-# Persistent Unix-Style File System (`ds3`)
+# Persistent Unix-Style File System
 
-A high-performance, crash-resilient Unix-style file system (VSFS / UFS) implemented from scratch in C++. The system manages hierarchical directory trees, bitwise resource allocation, inode metadata mapping, and block-level data storage on top of a simulated raw block device with transactional journaling for crash consistency.
+A high-performance Unix-style file system (VSFS / UFS) implemented in C++. The system manages hierarchical directory trees, bitwise resource allocation, inode metadata mapping, and block-level data storage on top of a simulated raw block storage device.
 
 ---
 
 ## Technical Highlights
 
-- **Crash Resilience & Atomicity**: Transaction-based undo logging system providing atomic multi-block operations (`beginTransaction()`, `commit()`, `rollback()`) to protect against incomplete disk writes and metadata corruption.
 - **On-Disk Persistence**: Custom on-disk layout featuring superblocks, allocation bitmaps, inode tables, and linear directory entry pools mapped directly to 4096-byte blocks.
 - **POSIX-Like File Operations**: Complete programmatic interface supporting recursive path lookup, file creation, truncation, partial-write semantics on disk exhaustion, and entry compaction upon deletion.
 - **Bitwise Space Allocation**: Fast LSB-first bit manipulation algorithms for continuous inode and data block tracking.
@@ -22,19 +21,19 @@ The file system bridges low-level physical block storage with hierarchical, POSI
 flowchart TD
     CLI["CLI Toolchain (ds3ls, ds3cat, ds3cp, ds3mkdir, ds3touch, ds3rm, ds3bits, mkfs)"]
     LFS["Local File System Engine (LocalFileSystem)"]
-    Disk["Block Layer & Transaction Engine (Disk)"]
+    Disk["Block Device Interface (Disk)"]
     Storage[("Raw Block Device (*.img)")]
 
     CLI -->|POSIX-like API calls| LFS
     LFS -->|Block Read / Write Operations| Disk
-    Disk -->|Block I/O & Undo Journaling| Storage
+    Disk -->|Block Read / Write Operations| Storage
 ```
 
 ### Abstraction Layers
 
-1. **Physical Block & Transaction Layer (`Disk`)**:
-   - Manages raw I/O across fixed-size blocks (4096 bytes per block).
-   - Implements an in-memory undo log transaction system that captures pre-images of modified blocks. If a multi-block operation encounters an out-of-storage error or fault, changes roll back cleanly to maintain disk consistency.
+1. **Physical Block Layer (`Disk`)**:
+   - Abstracts raw disk image file I/O operations across fixed-size blocks (4096 bytes per block).
+   - Provides low-level block read and write primitives (`readBlock()`, `writeBlock()`) interfacing with the underlying storage medium.
 
 2. **File System Layer (`LocalFileSystem`)**:
    - Manages hierarchical directories, path resolution, file metadata, and dynamic block allocation.
