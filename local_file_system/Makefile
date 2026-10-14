@@ -1,7 +1,7 @@
-all: gunrock_web mkfs ds3ls ds3cat ds3bits ds3mkdir ds3cp ds3touch ds3rm
+all: mkfs ds3ls ds3cat ds3bits ds3mkdir ds3cp ds3touch ds3rm
 
 CC = g++
-CFLAGS_BASE = -g -Werror -Wall -I include -I shared/include
+CFLAGS_BASE = -g -Werror -Wall -I include
 LDFLAGS = -pthread
 
 # If DEBUGGER is set, don't use ASAN
@@ -11,16 +11,11 @@ else
     CFLAGS = $(CFLAGS_BASE) -fsanitize=address
 endif
 
-VPATH = shared
-
-OBJS = gunrock.o MyServerSocket.o MySocket.o HTTPRequest.o HTTPResponse.o http_parser.o HTTP.o HttpService.o HttpUtils.o FileService.o dthread.o WwwFormEncodedDict.o StringUtils.o Base64.o HttpClient.o HTTPClientResponse.o DistributedFileSystemService.o LocalFileSystem.o Disk.o
-
 DSUTIL_OBJS = Disk.o LocalFileSystem.o StringUtils.o
 
--include $(OBJS:.o=.d)
+OBJS = $(DSUTIL_OBJS) ds3ls.o ds3cat.o ds3bits.o ds3mkdir.o ds3cp.o ds3touch.o ds3rm.o mkfs.o
 
-gunrock_web: $(OBJS)
-	$(CC) -o $@ $(CFLAGS) $(OBJS) $(LDFLAGS)
+-include $(OBJS:.o=.d)
 
 mkfs: mkfs.o
 	gcc -o $@ $(CFLAGS) mkfs.o
@@ -63,4 +58,4 @@ ds3touch: ds3touch.o $(DSUTIL_OBJS)
 	gcc $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f gunrock_web mkfs ds3ls ds3cat ds3bits ds3cp ds3mkdir ds3touch ds3rm *.o *~ core.* *.d
+	rm -f mkfs ds3ls ds3cat ds3bits ds3cp ds3mkdir ds3touch ds3rm *.o *~ core.* *.d

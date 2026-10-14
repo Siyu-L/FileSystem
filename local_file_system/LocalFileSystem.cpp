@@ -9,7 +9,6 @@
 
 using namespace std;
 
-int writeDirectory(LocalFileSystem* fs, int inodeNumber, const void *buffer, int size);
 
 LocalFileSystem::LocalFileSystem(Disk *disk) {
   this->disk = disk;
@@ -241,15 +240,8 @@ int LocalFileSystem::read(int inodeNumber, void *buffer, int size) {
 // find open spot in bitmap
 // blockType: 0 = inode, 1 = data
 // returns index of open spot if success, returns -ENOTENOUGHSPACE on fail
-int find_open_spot(super_t* super, int blockType, unsigned char* bitmap, int bitmapBytes) {
-  int super_num;
-
-  if (blockType == 0) {
-    super_num = super->num_inodes;
-  }
-  else {
-    super_num = super->num_data;
-  }
+int LocalFileSystem::find_open_spot(super_t* super, int blockType, unsigned char* bitmap, int bitmapBytes) {
+  int super_num = (blockType == 0) ? super->num_inodes : super->num_data;
 
   int curr_num = -1;
   for (int i = 0; i < bitmapBytes; i++) {
@@ -273,45 +265,48 @@ int find_open_spot(super_t* super, int blockType, unsigned char* bitmap, int bit
 // finds an open spot and sets it in bitmap
 // returns block number on success, negative value on failure
 // absolute disk block number = super.data_region_addr + bitmap index
-int allocate_data_block(LocalFileSystem* fs, super_t *super) {
-  // find open data spot
-    int data_bitmap_bytes = (super->num_data / 8);
-    if ((super->num_data % 8) != 0) {
-      data_bitmap_bytes++;
-    }
-
-    unsigned char* data_bitmap = (unsigned char*)malloc(data_bitmap_bytes);
-    fs->readDataBitmap(super, data_bitmap);
-    
-    int data_num = find_open_spot(super, 1, data_bitmap, data_bitmap_bytes);
-    
-    if (data_num < 0) {
-      // return error
-      return data_num;
-    }
-
-    // set data bitmap
-    int data_byte_num = data_num / 8;
-    int data_bit_offset = data_num % 8;
-    data_bitmap[data_byte_num] |= (1 << data_bit_offset);
-    fs->writeDataBitmap(super, data_bitmap);
-
+int LocalFileSystem::allocate_data_block(super_t *super) {
+  int data_bitmap_bytes = (super->num_data + 7) / 8;
+  unsigned char* data_bitmap = (unsigned char*)malloc(data_bitmap_bytes);
+  readDataBitmap(super, data_bitmap);
+  
+  int data_num = find_open_spot(super, 1, data_bitmap, data_bitmap_bytes);
+  if (data_num < 0) {
     free(data_bitmap);
-    return super->data_region_addr + data_num;
+    return data_num;
+  }
+
+  int data_byte_num = data_num / 8;
+  int data_bit_offset = data_num % 8;
+  data_bitmap[data_byte_num] |= (1 << data_bit_offset);
+  writeDataBitmap(super, data_bitmap);
+
+  free(data_bitmap);
+  return super->data_region_addr + data_num;
+}
+
+void LocalFileSystem::deallocate_data_block(super_t *super, int blockNumber) {
+  if (blockNumber < super->data_region_addr || blockNumber >= super->data_region_addr + super->num_data) {
+    return;
+  }
+  int data_bitmap_bytes = (super->num_data + 7) / 8;
+  unsigned char* data_bitmap = (unsigned char*)malloc(data_bitmap_bytes);
+  readDataBitmap(super, data_bitmap);
+  int rel_block = blockNumber - super->data_region_addr;
+  data_bitmap[rel_block / 8] &= ~(1 << (rel_block % 8));
+  writeDataBitmap(super, data_bitmap);
+  free(data_bitmap);
 }
 
 // writes inode to inode region
 // assumes inode and inode number is valid, no failure modes
-void writeInodeToRegion(LocalFileSystem* fs, super_t* super, inode_t inode, int inode_num) {
-
+void LocalFileSystem::writeInodeToRegion(super_t* super, const inode_t &inode, int inode_num) {
   int inodeBytes = super->num_inodes * sizeof(inode_t);
   inode_t* inodes = (inode_t*)malloc(inodeBytes);
-  fs->readInodeRegion(super, inodes);
+  readInodeRegion(super, inodes);
   inodes[inode_num] = inode;
-  fs->writeInodeRegion(super, inodes);
-  
+  writeInodeRegion(super, inodes);
   free(inodes);
-
 }
 
 int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
@@ -388,7 +383,7 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   // if directory, allocate a disk block
   int data_num;
   if (type == UFS_DIRECTORY) {
-    data_num = allocate_data_block(this, &super);
+    data_num = allocate_data_block(&super);
     // no space error
     if (data_num < 0) {
       // don't commit inode bitmap changes
@@ -444,7 +439,11 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   dir_ent_t* dirContent = (dir_ent_t*)malloc(parentInode.size);
   ret = read(parentInodeNumber, dirContent, oldSize);
   if (ret < 0) {
+    if (type == UFS_DIRECTORY) {
+      deallocate_data_block(&super, data_num);
+    }
     free(dirContent);
+    free(inode_bitmap);
     return ret;
   }
   dir_ent_t entry;
@@ -453,14 +452,18 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   dirContent[entryNum] = entry;
 
 
-  ret = writeDirectory(this, parentInodeNumber, dirContent, parentInode.size);
+  ret = write(parentInodeNumber, dirContent, parentInode.size, UFS_DIRECTORY);
   if (ret < 0) {
+    if (type == UFS_DIRECTORY) {
+      deallocate_data_block(&super, data_num);
+    }
     free(dirContent);
+    free(inode_bitmap);
     return ret;
   }
   free(dirContent);
 
-  writeInodeToRegion(this, &super, inode, inode_num);
+  writeInodeToRegion(&super, inode, inode_num);
 
   writeInodeBitmap(&super, inode_bitmap);
   free(inode_bitmap);
@@ -469,6 +472,10 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
 }
 
 int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
+  return write(inodeNumber, buffer, size, UFS_REGULAR_FILE);
+}
+
+int LocalFileSystem::write(int inodeNumber, const void *buffer, int size, int expectedType) {
   if (size < 0) {
     return -EINVALIDSIZE;
   }
@@ -485,7 +492,7 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
     return -EINVALIDINODE;
   }
 
-  if (inode.type != UFS_REGULAR_FILE) {
+  if (inode.type != expectedType) {
     return -EINVALIDTYPE;
   }
 
@@ -500,14 +507,9 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
     newBlocks += 1;
   }
 
-
   int diff = newBlocks - oldBlocks;
   
-  int data_bitmap_bytes = (super.num_data / 8);
-  if ((super.num_data % 8) != 0) {
-    data_bitmap_bytes++;
-  }
-
+  int data_bitmap_bytes = (super.num_data + 7) / 8;
   inode.size = newSize;
 
   unsigned char* data_bitmap = (unsigned char*)malloc(data_bitmap_bytes);
@@ -516,13 +518,12 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
   // need to allocate more blocks
   if (diff > 0) {
     for (int i = oldBlocks; i < newBlocks; i++) {
-      // set data bitmap and direct pointers to data block numbers
-
       int data_index = find_open_spot(&super, 1, data_bitmap, data_bitmap_bytes);
-      // on error
       if (data_index < 0) {
-        free(data_bitmap);
-        return data_index;
+        newBlocks = i;
+        newSize = (newBlocks == 0) ? 0 : std::min(newSize, newBlocks * UFS_BLOCK_SIZE);
+        inode.size = newSize;
+        break;
       }
       int data_byte_num = data_index / 8;
       int data_bit_offset = data_index % 8;
@@ -534,7 +535,6 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
   // need to deallocate blocks
   if (diff < 0) {
     for (int i = oldBlocks - 1; i >= newBlocks; i--) {
-      // bitmap index = block number - region start
       int data_num = inode.direct[i] - super.data_region_addr;
       int data_byte_num = data_num / 8;
       int data_bit_offset = data_num % 8;
@@ -543,130 +543,27 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
       inode.direct[i] = 0;
     }    
     writeDataBitmap(&super, data_bitmap);
-
   }
   
   char* block = (char*)malloc(UFS_BLOCK_SIZE);
   // copy all filled blocks
   for (int i = 0; i < newBlocks - 1; i++) {
-    memcpy(block, (char*)buffer + (i * UFS_BLOCK_SIZE), UFS_BLOCK_SIZE);
+    memcpy(block, (const char*)buffer + (i * UFS_BLOCK_SIZE), UFS_BLOCK_SIZE);
     disk->writeBlock(inode.direct[i], block);
   }
   // remaining partial block
   if (newSize % UFS_BLOCK_SIZE != 0) {
     memset(block, 0, UFS_BLOCK_SIZE);
-    memcpy(block, (char*) buffer + ((newBlocks - 1) * UFS_BLOCK_SIZE), newSize % UFS_BLOCK_SIZE);
+    memcpy(block, (const char*)buffer + ((newBlocks - 1) * UFS_BLOCK_SIZE), newSize % UFS_BLOCK_SIZE);
     disk->writeBlock(inode.direct[newBlocks - 1], block);
   }
   // remaining full block
   else if (newSize != 0) {
-    memcpy(block, (char*) buffer + ((newBlocks - 1) * UFS_BLOCK_SIZE), UFS_BLOCK_SIZE);
+    memcpy(block, (const char*)buffer + ((newBlocks - 1) * UFS_BLOCK_SIZE), UFS_BLOCK_SIZE);
     disk->writeBlock(inode.direct[newBlocks - 1], block);
   }
   
-  writeInodeToRegion(this, &super, inode, inodeNumber);
-
-  free(data_bitmap);
-  free(block);
-  return newSize;
-}
-
-int writeDirectory(LocalFileSystem* fs, int inodeNumber, const void *buffer, int size) {
-  if (size < 0) {
-    return -EINVALIDSIZE;
-  }
-
-  super_t super;
-  fs->readSuperBlock(&super);
-  if (inodeNumber < 0 || inodeNumber >= super.num_inodes) {
-    return -EINVALIDINODE;
-  }
-
-  inode_t inode;
-  int ret = fs->stat(inodeNumber, &inode);
-  if (ret != 0) {
-    return -EINVALIDINODE;
-  }
-
-  if (inode.type != UFS_DIRECTORY) {
-    return -EINVALIDTYPE;
-  }
-
-  int newSize = (size > MAX_FILE_SIZE) ? MAX_FILE_SIZE : size;
-  
-  int oldBlocks = inode.size / UFS_BLOCK_SIZE;
-  if ((inode.size % UFS_BLOCK_SIZE) != 0) {
-    oldBlocks += 1;
-  }
-  int newBlocks = newSize / UFS_BLOCK_SIZE;
-  if ((newSize % UFS_BLOCK_SIZE) != 0) {
-    newBlocks += 1;
-  }
-  int diff = newBlocks - oldBlocks;
-  
-  int data_bitmap_bytes = (super.num_data / 8);
-  if ((super.num_data % 8) != 0) {
-    data_bitmap_bytes++;
-  }
-
-  inode.size = newSize;
-
-  unsigned char* data_bitmap = (unsigned char*)malloc(data_bitmap_bytes);
-  fs->readDataBitmap(&super, data_bitmap);
-  
-  // need to allocate more blocks
-  if (diff > 0) {
-    for (int i = oldBlocks; i < newBlocks; i++) {
-      // set data bitmap and direct pointers to data block numbers
-
-      int data_index = find_open_spot(&super, 1, data_bitmap, data_bitmap_bytes);
-      // on error
-      if (data_index < 0) {
-        free(data_bitmap);
-        return data_index;
-      }
-      int data_byte_num = data_index / 8;
-      int data_bit_offset = data_index % 8;
-      data_bitmap[data_byte_num] |= (1 << data_bit_offset);
-      inode.direct[i] = data_index + super.data_region_addr;
-    }
-    fs->writeDataBitmap(&super, data_bitmap);
-  }
-  // need to deallocate blocks
-  if (diff < 0) {
-    for (int i = oldBlocks - 1; i >= newBlocks; i--) {
-      // bitmap index = block number - region start
-      int data_num = inode.direct[i] - super.data_region_addr;
-      int data_byte_num = data_num / 8;
-      int data_bit_offset = data_num % 8;
-      data_bitmap[data_byte_num] &= ~(1 << data_bit_offset);
-      
-      inode.direct[i] = 0;
-    }    
-    fs->writeDataBitmap(&super, data_bitmap);
-
-  }
-  
-  char* block = (char*)malloc(UFS_BLOCK_SIZE);
-  // copy all filled blocks
-  for (int i = 0; i < newBlocks - 1; i++) {
-    memcpy(block, (char*)buffer + (i * UFS_BLOCK_SIZE), UFS_BLOCK_SIZE);
-    fs->disk->writeBlock(inode.direct[i], block);
-  }
-  
-  // remaining partial block
-  if (newSize % UFS_BLOCK_SIZE != 0) {
-    memset(block, 0, UFS_BLOCK_SIZE);
-    memcpy(block, (char*) buffer + ((newBlocks - 1) * UFS_BLOCK_SIZE), newSize % UFS_BLOCK_SIZE);
-    fs->disk->writeBlock(inode.direct[newBlocks - 1], block);
-  }
-  // remaining full block
-  else if (newSize != 0) {
-    memcpy(block, (char*) buffer + ((newBlocks - 1) * UFS_BLOCK_SIZE), UFS_BLOCK_SIZE);
-    fs->disk->writeBlock(inode.direct[newBlocks - 1], block);
-  }
-  
-  writeInodeToRegion(fs, &super, inode, inodeNumber);
+  writeInodeToRegion(&super, inode, inodeNumber);
 
   free(data_bitmap);
   free(block);
@@ -674,7 +571,7 @@ int writeDirectory(LocalFileSystem* fs, int inodeNumber, const void *buffer, int
 }
 
 int LocalFileSystem::unlink(int parentInodeNumber, string name) {
-  if (name.size() > DIR_ENT_NAME_SIZE) {
+  if (name.size() >= DIR_ENT_NAME_SIZE) {
     return -EINVALIDNAME;
   }
   if (name == "." || name == "..") {
@@ -716,7 +613,7 @@ int LocalFileSystem::unlink(int parentInodeNumber, string name) {
       return -EDIRNOTEMPTY; 
     }
     // clear data blocks
-    ret = writeDirectory(this, inum, nullptr, 0);
+    ret = write(inum, nullptr, 0, UFS_DIRECTORY);
     if (ret < 0) {
       return ret;
     }
@@ -760,7 +657,7 @@ int LocalFileSystem::unlink(int parentInodeNumber, string name) {
   }
   parentInode.size -= sizeof(dir_ent_t);
 
-  ret = writeDirectory(this, parentInodeNumber, dirContent, parentInode.size);
+  ret = write(parentInodeNumber, dirContent, parentInode.size, UFS_DIRECTORY);
   if (ret < 0) {
     free(dirContent);
     return ret;

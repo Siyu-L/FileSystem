@@ -99,6 +99,7 @@ class LocalFileSystem {
    * (because you can't write to directories).
    */
   int write(int inodeNumber, const void *buffer, int size);
+  int write(int inodeNumber, const void *buffer, int size, int expectedType);
 
   /**
    * Read the contents of a file or directory.
@@ -148,6 +149,12 @@ class LocalFileSystem {
   // it in a function you add that is not part of the LocalFileSystem object but
   // can still access the disk.
   Disk *disk;
+
+ private:
+  int allocate_data_block(super_t *super);
+  void deallocate_data_block(super_t *super, int blockNumber);
+  int find_open_spot(super_t *super, int blockType, unsigned char *bitmap, int bitmapBytes);
+  void writeInodeToRegion(super_t *super, const inode_t &inode, int inodeNumber);
 };  
 
 #endif

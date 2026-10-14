@@ -28,7 +28,15 @@ int main(int argc, char *argv[]) {
   Disk *disk = new Disk(argv[1], UFS_BLOCK_SIZE);
   LocalFileSystem *fileSystem = new LocalFileSystem(disk);
   string srcFile = string(argv[2]);
-  int dstInode = stoi(argv[3]);
+  int dstInode;
+  try {
+    dstInode = stoi(argv[3]);
+  } catch (...) {
+    cerr << "Could not write to dst_file" << endl;
+    delete disk;
+    delete fileSystem;
+    exit(1);
+  }
   
   int fd = open(srcFile.c_str(), O_RDONLY);
   if (fd < 0) {
@@ -59,7 +67,7 @@ int main(int argc, char *argv[]) {
   }
 
   int ret = fileSystem->write(dstInode, buffer, bytes_read);
-  if (ret < 0) {
+  if (ret < 0 || ret < bytes_read) {
     cerr << "Could not write to dst_file" << endl;
     close(fd);
     free(buffer);

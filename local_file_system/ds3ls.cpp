@@ -45,7 +45,7 @@ int main(int argc, char *argv[]) {
 
   // find directory
   int curr_inum = UFS_ROOT_DIRECTORY_INODE_NUMBER;
-  int final_dir_inum;
+  int final_dir_inum = UFS_ROOT_DIRECTORY_INODE_NUMBER;
   for (size_t i = 0; i < dir_path.size(); i++) {
     string name = dir_path[i];
     int next_inum = fileSystem->lookup(curr_inum, name);
@@ -58,7 +58,11 @@ int main(int argc, char *argv[]) {
   }
 
   inode_t inode;
-  fileSystem->stat(curr_inum, &inode);
+  int stat_ret = fileSystem->stat(curr_inum, &inode);
+  if (stat_ret < 0) {
+    cerr << "Directory not found" << endl;
+    exit(1);
+  }
   vector<dir_ent_t> entries;
   
   // handle directory

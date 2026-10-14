@@ -2,3 +2,32 @@ README.md
 DOCUMENTATION.md
 .devcontainer
 .DS_Store
+
+# Executables
+mkfs
+ds3ls
+ds3cat
+ds3bits
+ds3mkdir
+ds3touch
+ds3cp
+ds3rm
+gunrock_web
+
+# Test artifacts
+test.img
+tests-out/
+
+# Build prerequisites & object files
+*.d
+*.o
+*.slo
+*.lo
+*.obj
+
+# Dynamic & static libraries
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
